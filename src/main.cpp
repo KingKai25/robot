@@ -61,8 +61,9 @@ float Kd = 12.0;
 float lineError = 0;
 float previous_error = 0;
 float I_sum = 0;
+int lastDirection = 1;  // 1=phải, -1=trái (hướng cuối cùng rõ ràng)
 
-int base_speed = 150;
+int base_speed = 100;
 int max_speed  = 255;
 
 // ---- Trạng thái dò line ----
@@ -76,22 +77,22 @@ enum RobotMode {
   MODE_AUTO_LINE_FOLLOW,   // Tự động dò line (PID)
   MODE_MANUAL_GRIPPER      // Thủ công điều khiển (Dabble GamePad)
 };
-RobotMode currentMode = MODE_AUTO_LINE_FOLLOW;
+RobotMode currentMode = MODE_MANUAL_GRIPPER;
 
 // ---- Góc servo đặt trước ----
-const int goc_nang      = 90;  // Nâng = 90°
-const int goc_ha        = 0;   // Hạ   = 0°
+const int goc_nang      = 0;  // Nâng = 0°
+const int goc_ha        = 110;   // Hạ   = 110°
 const int goc_mo_cang   = 90;  // Mở   = 90°
 const int goc_dong_cang = 0;   // Đóng = 0°
 
 // ---- Servo positions ----
-int liftLeftPosition  = goc_ha;         // Khởi tạo: hạ
-int liftRightPosition = goc_ha;
-int gripLeftPosition  = goc_mo_cang;    // Khởi tạo: mở
-int gripRightPosition = goc_mo_cang;
+int liftLeftPosition  = goc_nang;         // Khởi tạo: nâng 
+int liftRightPosition = goc_nang;
+int gripLeftPosition  = goc_dong_cang;    // Khởi tạo: đóng
+int gripRightPosition = goc_dong_cang;
 
 // ---- Toggle state (chẵn=90°, lẻ=0°) ----
-bool liftLeftState  = false;  // false = đang ở goc_ha (0°)
+bool liftLeftState  = false;  // false = đang ở goc_nang (0°)
 bool liftRightState = false;
 bool gripLeftState  = false;  // false = đang ở goc_mo_cang (90°) → lần nhấn đầu sẽ đóng
 bool gripRightState = false;
@@ -208,44 +209,44 @@ void readLine() {
   int s4 = digitalRead(S4);
   int s5 = digitalRead(S5);
 
-  // Phát hiện 5 mắt = 11111 (vạch ngang toàn đen)
-  bool allBlack = (s1 == 1 && s2 == 1 && s3 == 1 && s4 == 1 && s5 == 1);
-
-  if (allBlack && !lastAllBlack) {
-    detectCount++;
-    if (detectCount == 1) {
-      lineStarted = true;   // START: gặp vạch lần 1
-      Serial.println("[LINE] START detected");
-    } else if (detectCount == 2) {
-      lineStopped = true;   // STOP: gặp vạch lần 2
-      Serial.println("[LINE] STOP detected");
-    }
+  // In serial chỉ khi cảm biến thay đổi
+  static int ps1=-1, ps2=-1, ps3=-1, ps4=-1, ps5=-1;
+  if (s1!=ps1 || s2!=ps2 || s3!=ps3 || s4!=ps4 || s5!=ps5) {
+    Serial.printf("[RAW] S1=%d S2=%d S3=%d S4=%d S5=%d\n", s1, s2, s3, s4, s5);
+    ps1=s1; ps2=s2; ps3=s3; ps4=s4; ps5=s5;
   }
-  lastAllBlack = allBlack;
 
-  if (!lineStarted || lineStopped) return;
+  // Đảo bit: 0=đen → 1=active, 1=trắng → 0=inactive
+  int v1 = !s1;  // Vị trí +4 (cực phải)
+  int v2 = !s2;  // Vị trí +2
+  int v3 = !s3;  // Vị trí  0 (giữa)
+  int v4 = !s4;  // Vị trí -2
+  int v5 = !s5;  // Vị trí -4 (cực trái)
 
-  // Bảng mã lỗi theo vị trí cảm biến
-  if      (s5==0 && s4==0 && s3==0 && s2==0 && s1==1) lineError =  4;
-  else if (s5==0 && s4==0 && s3==0 && s2==1 && s1==1) lineError =  3;
-  else if (s5==0 && s4==0 && s3==0 && s2==1 && s1==0) lineError =  2;
-  else if (s5==0 && s4==0 && s3==1 && s2==1 && s1==0) lineError =  1;
-  else if (s5==0 && s4==0 && s3==1 && s2==0 && s1==0) lineError =  0;
-  else if (s5==0 && s4==1 && s3==1 && s2==0 && s1==0) lineError = -1;
-  else if (s5==0 && s4==1 && s3==0 && s2==0 && s1==0) lineError = -2;
-  else if (s5==1 && s4==1 && s3==0 && s2==0 && s1==0) lineError = -3;
-  else if (s5==1 && s4==0 && s3==0 && s2==0 && s1==0) lineError = -4;
-  else if (s5==0 && s4==0 && s3==0 && s2==0 && s1==0) lineError = -5;  // Mất line
-  else lineError = previous_error;  // Giữ lỗi cũ
+  int activeCount = v1 + v2 + v3 + v4 + v5;
+
+  if (activeCount > 0) {
+    // Trung bình có trọng số: tính vị trí vạch
+    float weightedSum = v1*4.0 + v2*2.0 + v3*0.0 + v4*(-2.0) + v5*(-4.0);
+    lineError = weightedSum / activeCount;
+    // Lưu hướng rõ ràng khi error đủ lớn
+    if (lineError > 0.5) lastDirection = 1;
+    else if (lineError < -0.5) lastDirection = -1;
+  } else {
+    // Mất line hoàn toàn → quay theo hướng cuối cùng để tìm lại
+    lineError = lastDirection * 5;
+  }
+
+  // In lại khi lineError thay đổi
+  static float prevPrintError = -999;
+  if (lineError != prevPrintError) {
+    Serial.printf("[SENSOR] S1=%d S2=%d S3=%d S4=%d S5=%d | Error=%.1f\n", s1, s2, s3, s4, s5, lineError);
+    prevPrintError = lineError;
+  }
 }
 
 // ==================== PID ====================
 void computePID() {
-  if (!lineStarted || lineStopped) {
-    stopMotors();
-    return;
-  }
-
   float P = lineError;
   I_sum += lineError;
   I_sum = constrain(I_sum, -50, 50);
@@ -262,31 +263,36 @@ void computePID() {
   setMotorLeft(left_speed);
   setMotorRight(right_speed);
 
+  // In PID chỉ khi error thay đổi
+  static float prevPidError = -999;
+  if (lineError != prevPidError) {
+    Serial.printf("[PID] Err=%.0f P=%.1f I=%.1f D=%.1f PID=%.1f | L=%d R=%d\n",
+      lineError, Kp*P, Ki*I_sum, Kd*D, PID_value, left_speed, right_speed);
+    prevPidError = lineError;
+  }
+
   previous_error = lineError;
 }
 
 // ==================== RESET PID STATE ====================
 void resetLineFollow() {
-  lineStarted    = false;
-  lineStopped    = false;
-  lastAllBlack   = false;
-  detectCount    = 0;
   lineError      = 0;
   previous_error = 0;
   I_sum          = 0;
+  lastDirection  = 1;
 }
 
 // ==================== XỬ LÝ GAMEPAD DABBLE (BLE) ====================
 void processGamepadManual() {
   // Di chuyển bằng D-Pad
   if (GamePad.isUpPressed()) {
-    moveForward(220);
+    moveForward(150);
   } else if (GamePad.isDownPressed()) {
-    moveBackward(220);
+    moveBackward(150);
   } else if (GamePad.isLeftPressed()) {
-    turnLeft(200);
+    turnLeft(130);
   } else if (GamePad.isRightPressed()) {
-    turnRight(200);
+    turnRight(130);
   } else {
     stopMotors();
   }
@@ -391,10 +397,10 @@ void setup() {
   ledcAttachPin(SERVO_GRIP_RIGHT, SERVO_CH_GRIP_R);
 
   // Vị trí mặc định servo
-  setLiftLeft(goc_ha);
-  setLiftRight(goc_ha);
-  setGripLeft(goc_mo_cang);
-  setGripRight(goc_mo_cang);
+  setLiftLeft(goc_nang);
+  setLiftRight(goc_nang);
+  setGripLeft(goc_dong_cang);
+  setGripRight(goc_dong_cang);
 
   Serial.println("[INIT] GPIO + PWM OK");
 
