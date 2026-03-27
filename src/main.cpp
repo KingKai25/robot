@@ -15,15 +15,15 @@
 #include <DabbleESP32.h>
 
 // ==================== CẤU HÌNH CHÂN GPIO (THEO SCHEMATIC) ====================
-// Motor Driver TB6612FNG
+// Motor Driver L298N
 // Motor A = bánh trái, Motor B = bánh phải
-#define AIN1  25   // D25 → TB6612 AIN1 (pin 14)
-#define AIN2  33   // D33 → TB6612 AIN2 (pin 15)
-#define PWMA  32   // D32 → TB6612 PWMA (pin 16)
+#define AIN1  25   // D25 → L298N IN1 (Motor A)
+#define AIN2  33   // D33 → L298N IN2 (Motor A)
+#define PWMA  32   // D32 → L298N ENA (PWM Motor A) ← tháo jumper
 
-#define BIN1  26   // D26 → TB6612 BIN1 (pin 12)
-#define BIN2  27   // D27 → TB6612 BIN2 (pin 11)
-#define PWMB  14   // D14 → TB6612 PWMB (pin 10)
+#define BIN1  26   // D26 → L298N IN3 (Motor B)
+#define BIN2  27   // D27 → L298N IN4 (Motor B)
+#define PWMB  14   // D14 → L298N ENB (PWM Motor B) ← tháo jumper
 
 // Cảm biến dò line TCRT5000 (5 mắt, bên phải ESP32)
 #define S1    18   // D18 → TCRT5000 S1
@@ -39,7 +39,7 @@
 #define SERVO_GRIP_RIGHT   19   // D19 → Servo mở/gắp tay phải
 
 // ==================== PWM CONFIG ====================
-#define PWM_FREQ      20000   // Tần số PWM động cơ (20kHz, giảm tiếng ồn)
+#define PWM_FREQ      10000   // Tần số PWM động cơ (10kHz, phù hợp L298N)
 #define PWM_RES       8       // Độ phân giải 8-bit (0-255)
 #define PWM_LEFT_CH   0       // LEDC channel cho motor trái
 #define PWM_RIGHT_CH  1       // LEDC channel cho motor phải
@@ -63,7 +63,7 @@ float previous_error = 0;
 float I_sum = 0;
 int lastDirection = 1;  // 1=phải, -1=trái (hướng cuối cùng rõ ràng)
 
-int base_speed = 100;
+int base_speed = 150;   // Tăng tốc độ cơ bản cho L298N
 int max_speed  = 255;
 
 // ---- Trạng thái dò line ----
@@ -81,7 +81,7 @@ RobotMode currentMode = MODE_MANUAL_GRIPPER;
 
 // ---- Góc servo đặt trước ----
 const int goc_nang      = 0;  // Nâng = 0°
-const int goc_ha        = 110;   // Hạ   = 110°
+const int goc_ha        = 100;   // Hạ   = 90°
 const int goc_mo_cang   = 90;  // Mở   = 90°
 const int goc_dong_cang = 0;   // Đóng = 0°
 
@@ -115,7 +115,7 @@ const int SERVO_STEP_DELAY = 10;        // ms giữa mỗi bước 1° cho servo
 bool wasConnected = false;
 bool modeChanged  = false;
 
-// ==================== MOTOR TB6612FNG ====================
+// ==================== MOTOR L298N ====================
 void setMotorLeft(int speed) {
   speed = constrain(speed, -255, 255);
   if (speed >= 0) {
@@ -181,6 +181,8 @@ void smoothServo(int channel, int &currentPos, int targetAngle, int stepDelay) {
     writeServoAngle(channel, currentPos);
     delay(stepDelay);
   }
+  delay(200);       // Chờ servo ổn định
+  ledcWrite(channel, 0);  // Tắt PWM → servo thả lỏng, không rung
 }
 
 void setLiftLeft(int angle) {
@@ -194,11 +196,15 @@ void setLiftRight(int angle) {
 void setGripLeft(int angle) {
   gripLeftPosition = constrain(angle, 0, 180);
   writeServoAngle(SERVO_CH_GRIP_L, gripLeftPosition);
+  delay(300);
+  ledcWrite(SERVO_CH_GRIP_L, 0);
 }
 
 void setGripRight(int angle) {
   gripRightPosition = constrain(angle, 0, 180);
   writeServoAngle(SERVO_CH_GRIP_R, gripRightPosition);
+  delay(300);
+  ledcWrite(SERVO_CH_GRIP_R, 0);
 }
 
 // ==================== ĐỌC CẢM BIẾN DÒ LINE ====================
@@ -286,13 +292,13 @@ void resetLineFollow() {
 void processGamepadManual() {
   // Di chuyển bằng D-Pad
   if (GamePad.isUpPressed()) {
-    moveForward(150);
+    moveForward(200);
   } else if (GamePad.isDownPressed()) {
-    moveBackward(150);
+    moveBackward(200);
   } else if (GamePad.isLeftPressed()) {
-    turnLeft(130);
+    turnLeft(180);
   } else if (GamePad.isRightPressed()) {
-    turnRight(130);
+    turnRight(180);
   } else {
     stopMotors();
   }
@@ -360,18 +366,20 @@ void checkModeSwitch() {
 
 // ==================== SETUP ====================
 void setup() {
+  // === Dừng motor NGAY LẬP TỨC để tránh quay khi boot ===
+  pinMode(AIN1, OUTPUT); digitalWrite(AIN1, LOW);
+  pinMode(AIN2, OUTPUT); digitalWrite(AIN2, LOW);
+  pinMode(BIN1, OUTPUT); digitalWrite(BIN1, LOW);
+  pinMode(BIN2, OUTPUT); digitalWrite(BIN2, LOW);
+  pinMode(PWMA, OUTPUT); digitalWrite(PWMA, LOW);
+  pinMode(PWMB, OUTPUT); digitalWrite(PWMB, LOW);
+
   Serial.begin(115200);
   delay(1000);
 
   Serial.println("\n========================================");
-  Serial.println("  ROBOT DO LINE + GRIPPER (TB6612FNG)");
+  Serial.println("  ROBOT DO LINE + GRIPPER (L298N)");
   Serial.println("========================================");
-
-  // GPIO động cơ (TB6612FNG direction pins)
-  pinMode(AIN1, OUTPUT);
-  pinMode(AIN2, OUTPUT);
-  pinMode(BIN1, OUTPUT);
-  pinMode(BIN2, OUTPUT);
 
   // GPIO cảm biến dò line (TCRT5000)
   pinMode(S1, INPUT);
@@ -380,11 +388,12 @@ void setup() {
   pinMode(S4, INPUT);
   pinMode(S5, INPUT);
 
-  // PWM động cơ (TB6612FNG PWMA/PWMB)
+  // PWM động cơ (L298N ENA/ENB)
   ledcSetup(PWM_LEFT_CH, PWM_FREQ, PWM_RES);
   ledcAttachPin(PWMA, PWM_LEFT_CH);
   ledcSetup(PWM_RIGHT_CH, PWM_FREQ, PWM_RES);
   ledcAttachPin(PWMB, PWM_RIGHT_CH);
+  stopMotors();
 
   // PWM Servo (50Hz, 16-bit resolution)
   ledcSetup(SERVO_CH_LIFT_L, 50, 16);
